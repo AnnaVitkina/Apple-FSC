@@ -13,12 +13,31 @@ INPUT_FSC_DIR = ROOT / "input" / "fsc"
 PROCESSING_DIR = ROOT / "processing"
 OUTPUT_DIR = ROOT / "output"
 
+# Default Google Drive location for RMT FSC data in Colab.
+COLAB_DRIVE_BASE = Path(
+    "/content/drive/Shareddrives/FA Ops Europe: Rate Maintenance Team "
+    "/Documents/AI Adoption RMT/RMT_Apple/RMT_FSC"
+)
+
 
 def _path_from_env(name: str) -> Path | None:
     value = os.environ.get(name)
     if not value:
         return None
     return Path(value).expanduser()
+
+
+def _colab_drive_base() -> Path | None:
+    candidates: list[Path] = []
+    env_base = _path_from_env("FSC_DRIVE_BASE")
+    if env_base is not None:
+        candidates.append(env_base)
+    candidates.append(COLAB_DRIVE_BASE)
+
+    for candidate in candidates:
+        if (candidate / "input" / "RA").is_dir() or (candidate / "input" / "fsc").is_dir():
+            return candidate
+    return None
 
 
 def configure_paths(
@@ -45,12 +64,20 @@ def configure_paths(
 
 
 def configure_paths_from_env() -> None:
-    """Apply FSC_* environment variables when set."""
+    """Apply FSC_* environment variables and Colab Drive defaults when available."""
     root = _path_from_env("FSC_ROOT")
     input_ra_dir = _path_from_env("FSC_INPUT_RA_DIR")
     input_fsc_dir = _path_from_env("FSC_INPUT_FSC_DIR")
     processing_dir = _path_from_env("FSC_PROCESSING_DIR")
     output_dir = _path_from_env("FSC_OUTPUT_DIR")
+
+    if input_ra_dir is None and input_fsc_dir is None and processing_dir is None and output_dir is None:
+        drive_base = _colab_drive_base()
+        if drive_base is not None:
+            input_ra_dir = drive_base / "input" / "RA"
+            input_fsc_dir = drive_base / "input" / "fsc"
+            processing_dir = drive_base / "processing"
+            output_dir = drive_base / "output"
 
     if any(path is not None for path in (root, input_ra_dir, input_fsc_dir, processing_dir, output_dir)):
         configure_paths(
