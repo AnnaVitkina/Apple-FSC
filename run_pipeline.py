@@ -11,6 +11,33 @@ Usage (local):
   python run_pipeline.py
   python run_pipeline.py --auto
   python run_pipeline.py --ra-file "input/RA/file.xlsx" --fsc-file "input/fsc/file.xlsx"
+
+Usage (Google Colab):
+  from google.colab import drive
+  drive.mount("/content/drive")
+
+  import sys
+  sys.path.insert(0, "/content/Apple-FSC")
+
+  from run_pipeline import run_pipeline
+  run_pipeline()
+
+  # Alternative (exec):
+  # exec(
+  #     open("/content/Apple-FSC/run_pipeline.py").read(),
+  #     {"__file__": "/content/Apple-FSC/run_pipeline.py"},
+  # )
+
+  # Optional: skip file-selection prompts
+  # import os
+  # os.environ["FSC_AUTO"] = "1"
+  # run_pipeline(auto=True)
+
+  # Optional: override Drive data folder
+  # os.environ["FSC_DRIVE_BASE"] = (
+  #     "/content/drive/Shareddrives/FA Ops Europe: Rate Maintenance Team "
+  #     "/Documents/AI Adoption RMT/RMT_Apple/RMT_FSC"
+  # )
 """
 
 from __future__ import annotations
@@ -21,11 +48,41 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-_CODE_DIR = Path(os.environ.get("FSC_ROOT", ".")).resolve()
-try:
-    _CODE_DIR = Path(__file__).resolve().parent
-except NameError:
-    pass
+
+def _resolve_code_dir() -> Path:
+    """Locate the Apple-FSC code folder when run as a script, import, or exec()."""
+    candidates: list[Path] = []
+
+    env_code_root = os.environ.get("FSC_CODE_ROOT")
+    if env_code_root:
+        candidates.append(Path(env_code_root).expanduser().resolve())
+
+    try:
+        candidates.append(Path(__file__).resolve().parent)
+    except NameError:
+        pass
+
+    candidates.append(Path("/content/Apple-FSC").resolve())
+
+    for path_entry in sys.path:
+        if not path_entry:
+            continue
+        path = Path(path_entry).expanduser().resolve()
+        if path.name == "Apple-FSC" or (path / "run_pipeline.py").is_file():
+            candidates.append(path)
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if (candidate / "project_paths.py").is_file():
+            return candidate
+
+    return candidates[0] if candidates else Path("/content/Apple-FSC").resolve()
+
+
+_CODE_DIR = _resolve_code_dir()
 if str(_CODE_DIR) not in sys.path:
     sys.path.insert(0, str(_CODE_DIR))
 
