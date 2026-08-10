@@ -28,6 +28,12 @@ RA_HEADER_MARKER = "lane #"
 FSC_HEADER_MARKER = "row number"
 TAB_FUEL_RATES_MARKER = "+ Fuel Rates"
 THREE_LETTER_CODE_PATTERN = re.compile(r"^[A-Za-z]{3}$")
+CITY_SYNONYM_GROUPS = (
+    ("Findley", "Findlay"),
+    ("Bangalore", "Bengaluru"),
+    ("United Arab Emirates", "UAE"),
+    ("Turkey", "Turkiye"),
+)
 
 
 @dataclass(frozen=True)
@@ -261,8 +267,27 @@ def _normalize_city_key(value: object) -> str:
     return re.sub(r"\s+", "", text).casefold()
 
 
+def _build_synonym_expansion() -> dict[str, set[str]]:
+    expansion: dict[str, set[str]] = {}
+    for group in CITY_SYNONYM_GROUPS:
+        normalized_group = {key for name in group if (key := _normalize_city_key(name))}
+        for key in normalized_group:
+            expansion[key] = normalized_group
+    return expansion
+
+
+_SYNONYM_EXPANSION = _build_synonym_expansion()
+
+
+def _expand_synonym_keys(keys: set[str]) -> set[str]:
+    expanded = set(keys)
+    for key in keys:
+        expanded |= _SYNONYM_EXPANSION.get(key, set())
+    return expanded
+
+
 def _city_alias_keys(value: object) -> set[str]:
-    """Return normalized city keys, expanding slash-separated aliases like Bengaluru/Bangalore."""
+    """Return normalized city keys, expanding slash-separated and synonym aliases."""
     text = _cell_text(value)
     if not text:
         return set()
@@ -276,7 +301,7 @@ def _city_alias_keys(value: object) -> set[str]:
         combined_key = _normalize_city_key(text)
         if combined_key:
             keys.add(combined_key)
-    return keys
+    return _expand_synonym_keys(keys)
 
 
 def _is_three_letter_code(value: object) -> bool:
