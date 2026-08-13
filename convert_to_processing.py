@@ -28,11 +28,13 @@ RA_HEADER_MARKER = "lane #"
 FSC_HEADER_MARKER = "row number"
 TAB_FUEL_RATES_MARKER = "+ Fuel Rates"
 THREE_LETTER_CODE_PATTERN = re.compile(r"^[A-Za-z]{3}$")
+BLANK_CITY_VALUES = {"", "-", "n/a", "#n/a", "na", "none", "null"}
 CITY_SYNONYM_GROUPS = (
     ("Findley", "Findlay"),
     ("Bangalore", "Bengaluru"),
     ("United Arab Emirates", "UAE"),
     ("Turkey", "Turkiye"),
+    ("Azerbaijan", "Azerbaijaan"),
 )
 
 
@@ -89,6 +91,19 @@ def _cell_text(value: object) -> str:
     if pd.isna(value):
         return ""
     return str(value).strip()
+
+
+def _is_meaningful_city_value(value: object) -> bool:
+    text = _cell_text(value).casefold()
+    return bool(text) and text not in BLANK_CITY_VALUES
+
+
+def _first_existing_column(columns: list[str], names: tuple[str, ...]) -> str | None:
+    for name in names:
+        column = _optional_column(columns, name)
+        if column is not None:
+            return column
+    return None
 
 
 def _normalize_headers(headers: list[object]) -> list[str]:
@@ -239,26 +254,35 @@ def _optional_column(columns: list[str], name: str) -> str | None:
         return None
 
 
+def _columns_by_normalized_names(columns: list[str], ordered_names: tuple[str, ...]) -> list[str]:
+    """Return columns whose names match any of the given labels (case-insensitive), in sheet order."""
+    pattern_set = {_cell_text(name).casefold() for name in ordered_names}
+    return [
+        column
+        for column in columns
+        if _cell_text(column).casefold() in pattern_set
+    ]
+
+
 def _origin_lookup_columns(columns: list[str]) -> list[str]:
-    lookup_columns = [_find_column(columns, "Origin City")]
-    origin_city_2 = _optional_column(columns, "Origin City_2")
-    if origin_city_2 is not None:
-        lookup_columns.append(origin_city_2)
+    lookup_columns = _columns_by_normalized_names(
+        columns,
+        ("Origin City", "Orig City", "Origin City_2"),
+    )
+    if not lookup_columns:
+        raise ValueError("Could not find origin city columns in RA dataframe")
     return lookup_columns
 
 
 def _destination_lookup_columns(columns: list[str]) -> list[str]:
     lookup_columns: list[str] = []
-    destination_city = _optional_column(columns, "Destination City")
-    destination = _optional_column(columns, "Destination")
-    if destination_city is not None:
-        lookup_columns.append(destination_city)
-    elif destination is not None:
-        lookup_columns.append(destination)
+    for names in (("Destination",), ("Dest City", "Destination City"), ("Destination_2",)):
+        for column in _columns_by_normalized_names(columns, names):
+            if column not in lookup_columns:
+                lookup_columns.append(column)
 
-    destination_2 = _optional_column(columns, "Destination_2")
-    if destination_2 is not None:
-        lookup_columns.append(destination_2)
+    if not lookup_columns:
+        raise ValueError("Could not find destination columns in RA dataframe")
     return lookup_columns
 
 
@@ -308,34 +332,62 @@ def _is_three_letter_code(value: object) -> bool:
     return bool(THREE_LETTER_CODE_PATTERN.fullmatch(_cell_text(value)))
 
 
-def _row_origin_alias_keys(row: pd.Series, origin_columns: list[str]) -> set[str]:
-    if not origin_columns:
+def _origin_keys_for_column(row: pd.Series, column_name: str) -> set[str]:
+    value = row[column_name]
+    if _is_three_letter_code(value):
         return set()
-
-    primary_column = origin_columns[0]
-    secondary_column = origin_columns[1] if len(origin_columns) > 1 else None
-    primary_value = row[primary_column]
-
-    if _is_three_letter_code(primary_value) and secondary_column is not None:
-        secondary_value = row[secondary_column]
-        if _cell_text(secondary_value):
-            return _city_alias_keys(secondary_value)
-
-    keys = _city_alias_keys(primary_value)
-    if secondary_column is not None:
-        keys |= _city_alias_keys(row[secondary_column])
-    return keys
+    if not _is_meaningful_city_value(value):
+        return set()
+    return _city_alias_keys(value)
 
 
-def _row_city_alias_keys(row: pd.Series, column_names: list[str]) -> set[str]:
-    keys: set[str] = set()
-    for column_name in column_names:
-        keys |= _city_alias_keys(row[column_name])
-    return keys
+def _destination_keys_for_column(row: pd.Series, column_name: str) -> set[str]:
+    if not _is_meaningful_city_value(row[column_name]):
+        return set()
+    return _city_alias_keys(row[column_name])
 
 
-def _lookup_keys_for_row(row: pd.Series, column_names: list[str]) -> list[str]:
-    return sorted(_row_city_alias_keys(row, column_names))
+def _lookup_column_pairs(
+    origin_columns: list[str],
+    destination_columns: list[str],
+) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add_pair(origin_column: str, destination_column: str) -> None:
+        key = (origin_column, destination_column)
+        if key not in seen:
+            seen.add(key)
+            pairs.append(key)
+
+    if origin_columns and destination_columns:
+        add_pair(origin_columns[0], destination_columns[0])
+
+    for origin_column in origin_columns:
+        for destination_column in destination_columns:
+            add_pair(origin_column, destination_column)
+
+    return pairs
+
+
+def _lookup_fsc_value(
+    row: pd.Series,
+    fsc_lookup: dict[tuple[str, str], object],
+    origin_columns: list[str],
+    destination_columns: list[str],
+) -> object:
+    for origin_column, destination_column in _lookup_column_pairs(origin_columns, destination_columns):
+        origin_keys = _origin_keys_for_column(row, origin_column)
+        destination_keys = _destination_keys_for_column(row, destination_column)
+        if not origin_keys or not destination_keys:
+            continue
+
+        for destination_key in sorted(destination_keys):
+            for origin_key in sorted(origin_keys):
+                value = fsc_lookup.get((origin_key, destination_key), pd.NA)
+                if pd.notna(value):
+                    return value
+    return pd.NA
 
 
 def _build_fsc_lookup(
@@ -351,21 +403,6 @@ def _build_fsc_lookup(
             for destination_key in _city_alias_keys(row[destination_column]):
                 lookup[(origin_key, destination_key)] = value
     return lookup
-
-
-def _lookup_fsc_value(
-    row: pd.Series,
-    fsc_lookup: dict[tuple[str, str], object],
-    origin_columns: list[str],
-    destination_columns: list[str],
-) -> object:
-    origin_keys = sorted(_row_origin_alias_keys(row, origin_columns))
-    for destination_key in _lookup_keys_for_row(row, destination_columns):
-        for origin_key in origin_keys:
-            value = fsc_lookup.get((origin_key, destination_key), pd.NA)
-            if pd.notna(value):
-                return value
-    return pd.NA
 
 
 def trim_ra_after_first_currency(df: pd.DataFrame) -> pd.DataFrame:
