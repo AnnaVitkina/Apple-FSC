@@ -52,6 +52,7 @@ MUTED_HEADER_NAMES = {
 DISPLAY_HEADER_OVERRIDES = {
     "Origin City_2": "Origin City",
     "Destination_2": "Destination",
+    "Destination City_2": "Destination City",
     "Lane Type_2": "Lane Type",
     "Service_2": "Service",
 }
@@ -184,12 +185,12 @@ def save_formatted_rate_card(
             _style_data_cell(cell, column_name=column_name, value=value)
 
         currency_value = row[currency_column]
+        surcharge_value = row[surcharge_column]
         currency_cell = worksheet.cell(excel_row, currency_col_idx)
-        if _cell_text(currency_value):
+        if pd.notna(surcharge_value) and _cell_text(currency_value):
             currency_cell.value = currency_value
         _style_data_cell(currency_cell, column_name="Currency", value=currency_value)
 
-        surcharge_value = row[surcharge_column]
         surcharge_cell = worksheet.cell(excel_row, surcharge_col_idx)
         if pd.notna(surcharge_value):
             surcharge_cell.value = surcharge_value
