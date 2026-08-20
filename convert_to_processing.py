@@ -28,6 +28,7 @@ RA_HEADER_MARKER = "lane #"
 FSC_HEADER_MARKER = "row number"
 TAB_FUEL_RATES_MARKER = "+ Fuel Rates"
 THREE_LETTER_CODE_PATTERN = re.compile(r"^[A-Za-z]{3}$")
+TWO_LETTER_CODE_PATTERN = re.compile(r"^[A-Za-z]{2}$")
 BLANK_CITY_VALUES = {"", "-", "n/a", "#n/a", "na", "none", "null"}
 CITY_SYNONYM_GROUPS = (
     ("Findley", "Findlay"),
@@ -91,6 +92,40 @@ def _cell_text(value: object) -> str:
     if pd.isna(value):
         return ""
     return str(value).strip()
+
+
+def _normalize_fuel_surcharge_value(value: object) -> object:
+    """Normalize fuel surcharge values: decimal comma to dot, prefer numeric cells."""
+    if pd.isna(value):
+        return pd.NA
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+
+    text = _cell_text(value)
+    if not text:
+        return pd.NA
+
+    normalized_text = text.replace(",", ".")
+    try:
+        return float(normalized_text)
+    except ValueError:
+        return normalized_text
+
+
+def _fuel_surcharge_display_value(value: object) -> object:
+    """Format fuel surcharge for output using a dot decimal separator."""
+    normalized = _normalize_fuel_surcharge_value(value)
+    if pd.isna(normalized):
+        return pd.NA
+
+    if isinstance(normalized, (int, float)) and not isinstance(normalized, bool):
+        text = format(float(normalized), "f")
+        if "." in text:
+            text = text.rstrip("0").rstrip(".")
+        return text or "0"
+
+    return _cell_text(normalized).replace(",", ".")
 
 
 def _is_meaningful_city_value(value: object) -> bool:
@@ -276,7 +311,12 @@ def _origin_lookup_columns(columns: list[str]) -> list[str]:
 
 def _destination_lookup_columns(columns: list[str]) -> list[str]:
     lookup_columns: list[str] = []
-    for names in (("Destination",), ("Dest City", "Destination City"), ("Destination_2",)):
+    for names in (
+        ("Destination",),
+        ("Dest City", "Destination City"),
+        ("Destination_2",),
+        ("Destination City_2",),
+    ):
         for column in _columns_by_normalized_names(columns, names):
             if column not in lookup_columns:
                 lookup_columns.append(column)
@@ -332,6 +372,10 @@ def _is_three_letter_code(value: object) -> bool:
     return bool(THREE_LETTER_CODE_PATTERN.fullmatch(_cell_text(value)))
 
 
+def _is_two_letter_code(value: object) -> bool:
+    return bool(TWO_LETTER_CODE_PATTERN.fullmatch(_cell_text(value)))
+
+
 def _origin_keys_for_column(row: pd.Series, column_name: str) -> set[str]:
     value = row[column_name]
     if _is_three_letter_code(value):
@@ -342,9 +386,12 @@ def _origin_keys_for_column(row: pd.Series, column_name: str) -> set[str]:
 
 
 def _destination_keys_for_column(row: pd.Series, column_name: str) -> set[str]:
-    if not _is_meaningful_city_value(row[column_name]):
+    value = row[column_name]
+    if _is_two_letter_code(value) or _is_three_letter_code(value):
         return set()
-    return _city_alias_keys(row[column_name])
+    if not _is_meaningful_city_value(value):
+        return set()
+    return _city_alias_keys(value)
 
 
 def _lookup_column_pairs(
@@ -386,7 +433,7 @@ def _lookup_fsc_value(
             for origin_key in sorted(origin_keys):
                 value = fsc_lookup.get((origin_key, destination_key), pd.NA)
                 if pd.notna(value):
-                    return value
+                    return _fuel_surcharge_display_value(value)
     return pd.NA
 
 
@@ -399,9 +446,10 @@ def _build_fsc_lookup(
     lookup: dict[tuple[str, str], object] = {}
     for _, row in fsc_df.iterrows():
         value = row[value_column]
+        normalized_value = _normalize_fuel_surcharge_value(value)
         for origin_key in _city_alias_keys(row[origin_column]):
             for destination_key in _city_alias_keys(row[destination_column]):
-                lookup[(origin_key, destination_key)] = value
+                lookup[(origin_key, destination_key)] = normalized_value
     return lookup
 
 
@@ -545,6 +593,7 @@ def apply_fuel_surcharge_from_fsc(
 
     currency_idx = list(result.columns).index(currency_column)
     result.insert(currency_idx + 1, surcharge_column, surcharge_values)
+    result.loc[result[surcharge_column].isna(), currency_column] = pd.NA
 
     if result[surcharge_column].notna().any():
         if fsc_file is None or fsc_sheet is None:
