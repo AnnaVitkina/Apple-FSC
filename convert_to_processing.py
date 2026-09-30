@@ -484,11 +484,14 @@ def fuel_surcharge_column_name(fsc_value_column: str) -> str:
 
 def fsc_period_label_from_value_column(value_column: str) -> str:
     text = re.sub(r"\s*Value\s*\(USD\)\s*$", "", _cell_text(value_column), flags=re.IGNORECASE)
+    # Column headers sometimes include a year marker (e.g. Oct'26) that Calc. Rules omits.
+    text = re.sub(r"'\d{2}", "", text)
     return text.strip()
 
 
 def _normalize_period_key(value: object) -> str:
-    return re.sub(r"\s+", "", _cell_text(value)).casefold()
+    text = re.sub(r"'\d{2}", "", _cell_text(value))
+    return re.sub(r"\s+", "", text).casefold()
 
 
 def _format_valid_to_date(value: object) -> str:
